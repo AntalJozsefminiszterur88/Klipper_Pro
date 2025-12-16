@@ -326,6 +326,21 @@ class MedalUploaderTool(ctk.CTk):
         source_path = clip_info['source_path']
         target_name = self.sanitize_title(title, original_name)
 
+        encoder_type_lower = (encoder_type or "").lower()
+        cpu_encoder = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '24']
+        nvidia_encoder = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '24', '-b:v', '0']
+        amd_encoder = ['-c:v', 'h264_amf', '-quality', 'balanced']
+
+        if "nvidia" in encoder_type_lower:
+            video_encoder_params = nvidia_encoder
+            allow_fallback = True
+        elif "amd" in encoder_type_lower:
+            video_encoder_params = amd_encoder
+            allow_fallback = True
+        else:
+            video_encoder_params = cpu_encoder
+            allow_fallback = False
+
         relative_folder = os.path.relpath(os.path.dirname(source_path), video_path)
         target_dir = os.path.join(output_path, relative_folder)
         os.makedirs(target_dir, exist_ok=True)
@@ -352,19 +367,21 @@ class MedalUploaderTool(ctk.CTk):
             else:
                 self.log("     Átméretezés: Nem szükséges, 720p vagy kisebb.")
 
-            command = [
-                'ffmpeg', '-i', source_path,
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                '-c:a', 'aac',
-                '-metadata', f'creation_time={formatted_date}',
-                '-metadata', f'comment=UMKGL_HASH:{original_hash}',
-                '-movflags', '+faststart',
-            ]
+            def build_command(video_params):
+                cmd = ['ffmpeg', '-i', source_path]
+                if scale_filter:
+                    cmd.extend(['-vf', scale_filter])
+                cmd.extend(video_params)
+                cmd.extend([
+                    '-c:a', 'aac',
+                    '-metadata', f'creation_time={formatted_date}',
+                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
+                    '-movflags', '+faststart',
+                    '-y', target_path
+                ])
+                return cmd
 
-            if scale_filter:
-                command.extend(['-vf', scale_filter])
-
-            command.extend(['-y', target_path])
+            command = build_command(video_encoder_params)
 
             result = subprocess.run(
                 command,
@@ -373,6 +390,17 @@ class MedalUploaderTool(ctk.CTk):
                 encoding='utf-8',
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
+
+            if result.returncode != 0 and allow_fallback:
+                self.log("GPU kódolás sikertelen, váltás a megbízható CPU módra...")
+                command = build_command(cpu_encoder)
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                )
 
             if result.returncode == 0:
                 return True, f"  -> KÉSZ: {os.path.basename(target_path)} (dátum: {creation_datetime.strftime('%Y.%m.%d %H:%M')})"
