@@ -9,7 +9,7 @@ import customtkinter as ctk
 import subprocess
 from datetime import datetime
 import requests
-import shutil
+import concurrent.futures
 import hashlib
 from collections import Counter, defaultdict
 
@@ -111,6 +111,7 @@ class MedalUploaderTool(ctk.CTk):
 
         self.filename_to_title = {}
         self.log_counter = 0
+        self.path_lock = threading.Lock()
         self.log("Program indítva. Add meg az elérési utakat, majd kattints a zöld gombra.")
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -221,31 +222,51 @@ class MedalUploaderTool(ctk.CTk):
             self.log(f"HIBA: Nem sikerült olvasni a fájlt a hash-eléshez: {filepath} ({e})")
             return None
 
-    def embed_creation_date(self, video_path):
+    def process_single_clip(self, clip_info, video_path, output_path):
+        original_name, title = clip_info['original_name'], clip_info['title']
+        source_path = clip_info['source_path']
+        target_name = self.sanitize_title(title, original_name)
+
+        relative_folder = os.path.relpath(os.path.dirname(source_path), video_path)
+        target_dir = os.path.join(output_path, relative_folder)
+        os.makedirs(target_dir, exist_ok=True)
+        target_path = os.path.join(target_dir, target_name)
+
+        with self.path_lock:
+            counter = 1
+            while os.path.exists(target_path):
+                name, ext = os.path.splitext(target_name)
+                target_path = os.path.join(target_dir, f"{name}_{counter}{ext}")
+                counter += 1
+
         try:
-            creation_timestamp = os.path.getctime(video_path)
+            creation_timestamp = os.path.getctime(source_path)
             creation_datetime = datetime.fromtimestamp(creation_timestamp)
             formatted_date = creation_datetime.strftime('%Y-%m-%dT%H:%M:%SZ')
-            
-            self.log(f"  -> Metaadat javítása, dátum: {creation_datetime.strftime('%Y.%m.%d %H:%M')}")
-            temp_path = video_path + ".tmp.mp4"
-            command = ['ffmpeg', '-i', video_path, '-c', 'copy', '-metadata', f'creation_time={formatted_date}', '-y', temp_path]
-            
-            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-            
+
+            self.log(f"  -> Export: {original_name} -> {os.path.basename(target_path)}")
+            command = [
+                'ffmpeg', '-i', source_path, '-c', 'copy',
+                '-metadata', f'creation_time={formatted_date}',
+                '-y', target_path
+            ]
+
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
+
             if result.returncode == 0:
-                os.replace(temp_path, video_path)
-                return True
+                return True, f"  -> KÉSZ: {os.path.basename(target_path)} (dátum: {creation_datetime.strftime('%Y.%m.%d %H:%M')})"
             else:
-                self.log(f"  -> META HIBA: ffmpeg hiba:\n{result.stderr.strip()}")
-                if os.path.exists(temp_path): os.remove(temp_path)
+                return False, f"  -> META HIBA: ffmpeg hiba ({original_name}):\n{result.stderr.strip()}"
         except FileNotFoundError:
-            self.log("[HIBA] Az 'ffmpeg.exe' nem található! A metaadatok javítása kihagyva.")
-            messagebox.showerror("FFmpeg Hiba", "Az 'ffmpeg.exe' nem található!\nA program nem tudja javítani a dátumokat e nélkül.")
-            return 'ffmpeg_not_found'
+            return False, "[HIBA] Az 'ffmpeg.exe' nem található! A metaadatok javítása kihagyva."
         except Exception as e:
-            self.log(f"  -> META HIBA: {e}")
-        return False
+            return False, f"  -> HIBA a feldolgozás során ({original_name}): {e}"
 
     def run_sync(self, dry_run=False):
         try:
@@ -365,31 +386,18 @@ class MedalUploaderTool(ctk.CTk):
             self.log(f"\nExportálás: {len(files_to_process)} új klip másolása és javítása...")
             copied_count = 0
 
-            for clip_info in files_to_process:
-                original_name, title = clip_info['original_name'], clip_info['title']
-                source_path = clip_info['source_path']
-                target_name = self.sanitize_title(title, original_name)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_clip = {
+                    executor.submit(self.process_single_clip, clip_info, video_path, output_path): clip_info
+                    for clip_info in files_to_process
+                }
 
-                relative_folder = os.path.relpath(os.path.dirname(source_path), video_path)
-                target_dir = os.path.join(output_path, relative_folder)
-                os.makedirs(target_dir, exist_ok=True)
-                target_path = os.path.join(target_dir, target_name)
-
-                counter = 1
-                while os.path.exists(target_path):
-                    name, ext = os.path.splitext(target_name)
-                    target_path = os.path.join(target_dir, f"{name}_{counter}{ext}")
-                    counter += 1
-
-                try:
-                    shutil.copy2(source_path, target_path)
-                    self.log(f"  -> ÁTMÁSOLVA: {original_name} -> {os.path.basename(target_path)}")
-
-                    if self.embed_creation_date(target_path) == 'ffmpeg_not_found':
-                        break
-                    copied_count += 1
-                except Exception as e:
-                    self.log(f"  -> HIBA a másolás során ({original_name}): {e}")
+                for future in concurrent.futures.as_completed(future_to_clip):
+                    success, message = future.result()
+                    if message:
+                        self.log(message)
+                    if success:
+                        copied_count += 1
 
             self.log("-" * 30)
             self.log(f"KÉSZ! {copied_count} új klip előkészítve a '{output_path}' mappába.")
