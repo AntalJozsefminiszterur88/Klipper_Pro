@@ -369,12 +369,16 @@ class MedalUploaderTool(ctk.CTk):
                 original_name, title = clip_info['original_name'], clip_info['title']
                 source_path = clip_info['source_path']
                 target_name = self.sanitize_title(title, original_name)
-                target_path = os.path.join(output_path, target_name)
+
+                relative_folder = os.path.relpath(os.path.dirname(source_path), video_path)
+                target_dir = os.path.join(output_path, relative_folder)
+                os.makedirs(target_dir, exist_ok=True)
+                target_path = os.path.join(target_dir, target_name)
 
                 counter = 1
                 while os.path.exists(target_path):
                     name, ext = os.path.splitext(target_name)
-                    target_path = os.path.join(output_path, f"{name}_{counter}{ext}")
+                    target_path = os.path.join(target_dir, f"{name}_{counter}{ext}")
                     counter += 1
 
                 try:
