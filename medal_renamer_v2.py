@@ -87,6 +87,7 @@ class MedalUploaderTool(ctk.CTk):
         self.config_data = self.load_config()
 
         self.stop_event = threading.Event()
+        self.processing_thread = None
 
         # GUI elemek
         self.create_path_entry("1. Medal Adatbázis (clips.json):", "entry_json", self.browse_json, self.config_data.get("json_path", ""))
@@ -230,7 +231,8 @@ class MedalUploaderTool(ctk.CTk):
         self.set_buttons_state("disabled")
         self.set_stop_button_state("normal")
         self.stop_event.clear()
-        threading.Thread(target=self.run_sync, args=(dry_run,), daemon=True).start()
+        self.processing_thread = threading.Thread(target=self.run_sync, args=(dry_run,), daemon=True)
+        self.processing_thread.start()
 
     def log(self, msg, force_update=False):
         def append_message():
@@ -577,6 +579,7 @@ class MedalUploaderTool(ctk.CTk):
         finally:
             self.set_buttons_state("normal")
             self.set_stop_button_state("disabled")
+            self.processing_thread = None
 
     # A régi függvények itt kezdődnek (változatlanul)
     def extract_mapping_recursive(self, data, result_dict):
@@ -590,8 +593,15 @@ class MedalUploaderTool(ctk.CTk):
             for item in data: self.extract_mapping_recursive(item, result_dict)
 
     def on_close(self):
-        self.save_config()
-        self.destroy()
+        self.stop_event.set()
+        self.after(100, self.check_threads_and_destroy)
+
+    def check_threads_and_destroy(self):
+        if not self.processing_thread or not self.processing_thread.is_alive():
+            self.save_config()
+            self.destroy()
+        else:
+            self.after(100, self.check_threads_and_destroy)
 
 if __name__ == "__main__":
     app = MedalUploaderTool()
