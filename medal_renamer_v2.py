@@ -226,7 +226,33 @@ class MedalUploaderTool(ctk.CTk):
             self.log(f"HIBA: Nem sikerült olvasni a fájlt a hash-eléshez: {filepath} ({e})")
             return None
 
-    def process_single_clip(self, clip_info, video_path, output_path):
+    def get_video_codec(self, source_path):
+        try:
+            result = subprocess.run(
+                [
+                    'ffprobe',
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=codec_name',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    source_path
+                ],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
+            if result.returncode == 0:
+                return result.stdout.strip().lower()
+            else:
+                self.log(f"  -> FIGYELEM: ffprobe hiba ({source_path}): {result.stderr.strip()}")
+        except FileNotFoundError:
+            self.log("[HIBA] Az 'ffprobe' nem található! A kodek ellenőrzés kihagyva.")
+        except Exception as e:
+            self.log(f"  -> HIBA a kodek ellenőrzésekor ({source_path}): {e}")
+        return None
+
+    def process_single_clip(self, clip_info, video_path, output_path, original_hash):
         original_name, title = clip_info['original_name'], clip_info['title']
         source_path = clip_info['source_path']
         target_name = self.sanitize_title(title, original_name)
@@ -249,11 +275,35 @@ class MedalUploaderTool(ctk.CTk):
             formatted_date = creation_datetime.strftime('%Y-%m-%dT%H:%M:%SZ')
 
             self.log(f"  -> Export: {original_name} -> {os.path.basename(target_path)}")
-            command = [
-                'ffmpeg', '-i', source_path, '-c', 'copy',
-                '-metadata', f'creation_time={formatted_date}',
-                '-y', target_path
-            ]
+
+            codec = self.get_video_codec(source_path)
+            transcode_to_h264 = codec in {"hevc", "h265", "h.265"}
+            copy_streams = codec in {"h264", "avc1"}
+
+            if transcode_to_h264:
+                self.log("     Kodek: HEVC/H.265 észlelve, újrakódolás H.264-re (libx264).")
+                command = [
+                    'ffmpeg', '-i', source_path,
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                    '-c:a', 'aac',
+                    '-metadata', f'creation_time={formatted_date}',
+                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
+                    '-movflags', '+faststart',
+                    '-y', target_path
+                ]
+            else:
+                if copy_streams:
+                    self.log("     Kodek: H.264 észlelve, stream copy alkalmazva.")
+                else:
+                    self.log("     Kodek: Ismeretlen/egyéb, stream copy alkalmazva.")
+                command = [
+                    'ffmpeg', '-i', source_path,
+                    '-c', 'copy',
+                    '-metadata', f'creation_time={formatted_date}',
+                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
+                    '-movflags', '+faststart',
+                    '-y', target_path
+                ]
 
             result = subprocess.run(
                 command,
@@ -347,7 +397,8 @@ class MedalUploaderTool(ctk.CTk):
                         'original_name': original_name,
                         'title': title,
                         'size': os.path.getsize(file_path),
-                        'source_path': file_path
+                        'source_path': file_path,
+                        'hash': file_hash
                     }
 
                 if total_items:
@@ -402,7 +453,7 @@ class MedalUploaderTool(ctk.CTk):
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 future_to_clip = {
-                    executor.submit(self.process_single_clip, clip_info, video_path, output_path): clip_info
+                    executor.submit(self.process_single_clip, clip_info, video_path, output_path, clip_info['hash']): clip_info
                     for clip_info in files_to_process
                 }
 
