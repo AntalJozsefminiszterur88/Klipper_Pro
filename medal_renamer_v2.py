@@ -262,9 +262,9 @@ class MedalUploaderTool(ctk.CTk):
                     if file.lower().endswith('.mp4'):
                         mp4_count += 1
                         abs_path = os.path.abspath(os.path.join(root, file))
-                        file_map.setdefault(file, abs_path)
+                        file_map.setdefault(file.lower(), abs_path)
 
-            self.log(f"Összesen {mp4_count} darab .mp4 fájlt találtunk a mappában és almappákban.")
+            self.log(f"Találtam {mp4_count} fájlt a mapparendszerben.")
 
             with open(json_path, 'r', encoding='utf-8') as f:
                 raw_clips = {}
@@ -274,11 +274,16 @@ class MedalUploaderTool(ctk.CTk):
             needs_update = False
             missing_files = []
 
+            missing_debug_logged = 0
+
             for i, (original_name, title) in enumerate(raw_clips.items()):
                 self.log(f"  Elemzés: {i + 1}/{len(raw_clips)} - {original_name}")
-                file_path = file_map.get(original_name)
+                file_path = file_map.get(original_name.lower())
                 if not file_path or not os.path.exists(file_path):
                     missing_files.append(original_name)
+                    if missing_debug_logged < 3:
+                        self.log(f"[DEBUG] Nem található a térképben: '{original_name}'")
+                        missing_debug_logged += 1
                     continue
 
                 mtime = os.path.getmtime(file_path)
