@@ -139,7 +139,7 @@ class MedalUploaderTool(ctk.CTk):
         return {
             "json_path": default_json,
             "video_path": "",
-            "server_url": "http://localhost:3000",
+            "server_url": "http://api.umkgl.online:3000",
             "output_path": default_output,
         }
 
@@ -279,6 +279,11 @@ class MedalUploaderTool(ctk.CTk):
             for i, (original_name, title) in enumerate(raw_clips.items()):
                 self.log(f"  Elemzés: {i + 1}/{len(raw_clips)} - {original_name}")
                 file_path = file_map.get(original_name.lower())
+
+                if (not file_path) or (not os.path.exists(file_path)):
+                    clean_filename = self.sanitize_title(title, original_name).lower()
+                    file_path = file_map.get(clean_filename)
+
                 if not file_path or not os.path.exists(file_path):
                     missing_files.append(original_name)
                     if missing_debug_logged < 3:
