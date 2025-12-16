@@ -18,6 +18,7 @@ ctk.set_default_color_theme("blue")
 
 HISTORY_FILE = "restore_map.json"
 CACHE_FILE = "local_hashes.json"
+CONFIG_FILE = "config.json"
 
 def resource_path(relative_path):
     try:
@@ -73,43 +74,44 @@ class MedalUploaderTool(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("UMGKL - Medal Klip Előkészítő v4 (Hash alapú szinkronizálás)")
-        self.geometry("800x850")
-        
+        self.geometry("800x800")
+
         try:
             self.iconbitmap(resource_path("icon.ico"))
         except: pass
-        
+
         self.label_title = ctk.CTkLabel(self, text="Medal Klip Előkészítő", font=ctk.CTkFont(size=24, weight="bold"))
         self.label_title.pack(pady=15)
-        
+
+        self.config_data = self.load_config()
+
         # GUI elemek
-        default_json = os.path.join(os.getenv('APPDATA'), 'Medal', 'store', 'clips.json')
-        self.create_path_entry("1. Medal Adatbázis (clips.json):", "entry_json", self.browse_json, default_json)
-        self.create_path_entry("2. Medal Klipek Mappája:", "entry_video", self.browse_video)
-        self.create_path_entry("3. Weboldal Címe (URL):", "entry_server", None, "http://localhost:3000")
-        self.create_path_entry("4. Célmappa (ide kerülnek a feltöltendők):", "entry_output", self.browse_output)
-        
-        self.btn_prepare = ctk.CTkButton(self, text="ÚJ KLIPPEK ELŐKÉSZÍTÉSE FELTÖLTÉSHEZ", height=50, 
-                                       font=ctk.CTkFont(size=16, weight="bold"), 
+        self.create_path_entry("1. Medal Adatbázis (clips.json):", "entry_json", self.browse_json, self.config_data.get("json_path", ""))
+        self.create_path_entry("2. Medal Klipek Mappája:", "entry_video", self.browse_video, self.config_data.get("video_path", ""))
+        self.create_path_entry("3. Weboldal Címe (URL):", "entry_server", None, self.config_data.get("server_url", ""))
+        self.create_path_entry("4. Célmappa (ide kerülnek a feltöltendők):", "entry_output", self.browse_output, self.config_data.get("output_path", ""))
+
+        self.btn_preview = ctk.CTkButton(self, text="ELŐNÉZET / TESZT", height=50,
+                                       font=ctk.CTkFont(size=16, weight="bold"),
+                                       fg_color="#5b6eae", hover_color="#7289da",
+                                       command=lambda: self.run_sync(dry_run=True))
+        self.btn_preview.pack(fill="x", padx=20, pady=(20, 10))
+
+        self.btn_prepare = ctk.CTkButton(self, text="ÚJ KLIPPEK EXPORTÁLÁSA", height=50,
+                                       font=ctk.CTkFont(size=16, weight="bold"),
                                        fg_color="#27ae60", hover_color="#2ecc71",
-                                       command=self.prepare_new_uploads)
-        self.btn_prepare.pack(fill="x", padx=20, pady=(20, 10))
-        
+                                       command=lambda: self.run_sync(dry_run=False))
+        self.btn_prepare.pack(fill="x", padx=20, pady=(0, 10))
+
         self.textbox_label = ctk.CTkLabel(self, text="Folyamatnapló (Konzol)", font=ctk.CTkFont(size=14))
         self.textbox_label.pack(pady=(10, 2))
         self.textbox = ctk.CTkTextbox(self, height=200, font=("Consolas", 12))
         self.textbox.pack(fill="both", padx=20, pady=5)
-        
-        # Régi, manuális gombok
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=20, pady=10)
-        self.btn_start = ctk.CTkButton(btn_frame, text="Csak átnevezés (régi módszer)", command=self.start_rename)
-        self.btn_start.pack(side="left", expand=True, padx=5)
-        self.btn_revert = ctk.CTkButton(btn_frame, text="Visszanevezés", fg_color="#4f545c", hover_color="#686d73", command=self.start_revert)
-        self.btn_revert.pack(side="left", expand=True, padx=5)
 
         self.filename_to_title = {}
         self.log("Program indítva. Add meg az elérési utakat, majd kattints a zöld gombra.")
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def create_path_entry(self, label_text, entry_attr, browse_cmd, default_text=""):
         frame = ctk.CTkFrame(self)
@@ -117,10 +119,72 @@ class MedalUploaderTool(ctk.CTk):
         ctk.CTkLabel(frame, text=label_text, width=250, anchor="w").pack(side="left", padx=10)
         entry = ctk.CTkEntry(frame, placeholder_text="...")
         entry.pack(side="left", fill="x", expand=True)
-        if default_text: entry.insert(0, default_text if os.path.exists(default_text) else "")
+        if default_text is not None:
+            entry.insert(0, default_text)
         setattr(self, entry_attr, entry)
         if browse_cmd:
             ctk.CTkButton(frame, text="Tallózás", width=80, command=browse_cmd).pack(side="right", padx=10)
+
+    def get_default_config(self):
+        appdata = os.getenv('APPDATA') or ""
+        default_json = ""
+        if appdata:
+            candidate = os.path.join(appdata, 'Medal', 'store', 'clips.json')
+            if os.path.exists(candidate):
+                default_json = candidate
+
+        desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
+        default_output = os.path.join(desktop_path, 'Export_Klippek')
+
+        return {
+            "json_path": default_json,
+            "video_path": "",
+            "server_url": "http://localhost:3000",
+            "output_path": default_output,
+        }
+
+    def load_config(self):
+        defaults = self.get_default_config()
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                defaults.update({
+                    "json_path": data.get("json_path", defaults["json_path"]),
+                    "video_path": data.get("video_path", defaults["video_path"]),
+                    "server_url": data.get("server_url", defaults["server_url"]),
+                    "output_path": data.get("output_path", defaults["output_path"]),
+                })
+            except Exception:
+                pass
+        return defaults
+
+    def save_config(self):
+        data = {
+            "json_path": self.entry_json.get().strip(),
+            "video_path": self.entry_video.get().strip(),
+            "server_url": self.entry_server.get().strip(),
+            "output_path": self.entry_output.get().strip(),
+        }
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.log(f"Nem sikerült menteni a beállításokat: {e}")
+
+    def format_size(self, size_bytes):
+        units = ['B', 'KB', 'MB', 'GB', 'TB']
+        size = float(size_bytes)
+        for unit in units:
+            if size < 1024 or unit == units[-1]:
+                return f"{size:.2f} {unit}"
+            size /= 1024
+
+    def sanitize_title(self, title, fallback_name):
+        clean_title = "".join([c for c in title if c not in '<>:"/\\|?*']).strip()
+        if not clean_title:
+            clean_title = os.path.splitext(fallback_name)[0]
+        return f"{clean_title}.mp4"
 
     def log(self, msg):
         self.textbox.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
@@ -171,35 +235,42 @@ class MedalUploaderTool(ctk.CTk):
             self.log(f"  -> META HIBA: {e}")
         return False
 
-    def prepare_new_uploads(self):
-        # 1. Bemeneti adatok ellenőrzése
-        json_path, video_path, server_url, output_path = self.entry_json.get(), self.entry_video.get(), self.entry_server.get().strip(), self.entry_output.get()
+    def run_sync(self, dry_run=False):
+        json_path = self.entry_json.get().strip()
+        video_path = self.entry_video.get().strip()
+        server_url = self.entry_server.get().strip()
+        output_path = self.entry_output.get().strip()
+
         if not all([json_path, video_path, server_url, output_path]):
-            messagebox.showerror("Hiba", "Minden mezőt ki kell tölteni!"); return
-        
-        self.log("\n--- ÚJ KLIPPEK SZINKRONIZÁLÁSA INDUL (HASH ALAPON) ---")
+            messagebox.showerror("Hiba", "Minden mezőt ki kell tölteni!")
+            return
+
+        header = "ELŐNÉZET / TESZT" if dry_run else "ÚJ KLIPPEK EXPORTÁLÁSA"
+        self.log(f"\n--- {header} (HASH ALAPÚ SZINKRONIZÁLÁS) ---")
 
         try:
-            # 2. Helyi klipek elemzése és hash-elése (cache használatával)
-            self.log("Helyi klipek elemzése és ujjlenyomatok (hash) készítése...")
             cache = {}
             if os.path.exists(CACHE_FILE):
-                with open(CACHE_FILE, 'r') as f: cache = json.load(f)
+                with open(CACHE_FILE, 'r') as f:
+                    cache = json.load(f)
 
             with open(json_path, 'r', encoding='utf-8') as f:
-                raw_clips = {}; self.extract_mapping_recursive(json.load(f), raw_clips)
-            
+                raw_clips = {}
+                self.extract_mapping_recursive(json.load(f), raw_clips)
+
             local_hashes = {}
             needs_update = False
-            
+            missing_files = []
+
             for i, (original_name, title) in enumerate(raw_clips.items()):
-                self.log(f"  Elemzés: {i+1}/{len(raw_clips)} - {original_name}")
+                self.log(f"  Elemzés: {i + 1}/{len(raw_clips)} - {original_name}")
                 file_path = os.path.join(video_path, original_name)
-                if not os.path.exists(file_path): continue
+                if not os.path.exists(file_path):
+                    missing_files.append(original_name)
+                    continue
 
                 mtime = os.path.getmtime(file_path)
-                
-                # Cache ellenőrzés
+
                 if original_name in cache and cache[original_name].get('mtime') == mtime:
                     file_hash = cache[original_name]['hash']
                 else:
@@ -207,15 +278,22 @@ class MedalUploaderTool(ctk.CTk):
                     if file_hash:
                         cache[original_name] = {'hash': file_hash, 'mtime': mtime}
                         needs_update = True
-                
+
                 if file_hash:
-                    local_hashes[file_hash] = {'original_name': original_name, 'title': title}
+                    local_hashes[file_hash] = {
+                        'original_name': original_name,
+                        'title': title,
+                        'size': os.path.getsize(file_path)
+                    }
 
-            if needs_update:
-                with open(CACHE_FILE, 'w') as f: json.dump(cache, f, indent=2)
+            if needs_update and not dry_run:
+                with open(CACHE_FILE, 'w') as f:
+                    json.dump(cache, f, indent=2)
+
             self.log(f"Helyi klipek elemzése kész. {len(local_hashes)} érvényes klip azonosítva.")
+            if missing_files:
+                self.log(f"Figyelem: {len(missing_files)} fájl nem található a klipek mappájában.")
 
-            # 3. Szerveren lévő hash-ek lekérése
             self.log("Kapcsolódás a szerverhez...")
             api_endpoint = f"{server_url.rstrip('/')}/api/videos/get-uploaded-hashes"
             response = requests.get(api_endpoint, timeout=10)
@@ -223,37 +301,53 @@ class MedalUploaderTool(ctk.CTk):
             server_hashes = set(response.json())
             self.log(f"Szerveren lévő klipek (hash) száma: {len(server_hashes)}.")
 
-            # 4. Hiányzó klipek meghatározása
             files_to_process = []
+            total_missing_size = 0
             for file_hash, clip_info in local_hashes.items():
                 if file_hash not in server_hashes:
                     files_to_process.append(clip_info)
-            
+                    total_missing_size += clip_info['size']
+
+            self.log(f"Helyi klipek száma: {len(local_hashes)} db")
+            self.log(f"Ebből új, feltöltendő: {len(files_to_process)} db")
+            self.log(f"A várható export mérete: {self.format_size(total_missing_size)}")
+
+            if dry_run:
+                if not files_to_process:
+                    messagebox.showinfo("Naprakész", "Minden helyi kliped már fent van a weboldalon!")
+                else:
+                    messagebox.showinfo("Előnézet kész", "A naplóban láthatod a várható export részleteit.")
+                self.save_config()
+                return
+
             if not files_to_process:
                 self.log("\nNem található új, feltöltésre váró klip.")
-                messagebox.showinfo("Naprakész", "Minden helyi kliped már fent van a weboldalon!"); return
+                messagebox.showinfo("Naprakész", "Minden helyi kliped már fent van a weboldalon!")
+                self.save_config()
+                return
 
-            # 5. Előkészítés: másolás, átnevezés, metaadat javítás
-            self.log(f"\nElőkészítés: {len(files_to_process)} új klip másolása és javítása...")
+            os.makedirs(output_path, exist_ok=True)
+            self.log(f"\nExportálás: {len(files_to_process)} új klip másolása és javítása...")
             copied_count = 0
+
             for clip_info in files_to_process:
                 original_name, title = clip_info['original_name'], clip_info['title']
                 source_path = os.path.join(video_path, original_name)
-                
-                clean_title = "".join([c for c in title if c not in '<>:"/\\|?*']).strip()
-                if not clean_title: clean_title = os.path.splitext(original_name)[0]
-                target_name = f"{clean_title}.mp4"
+                target_name = self.sanitize_title(title, original_name)
                 target_path = os.path.join(output_path, target_name)
 
                 counter = 1
                 while os.path.exists(target_path):
-                    target_path = os.path.join(output_path, f"{clean_title}_{counter}.mp4"); counter += 1
-                
+                    name, ext = os.path.splitext(target_name)
+                    target_path = os.path.join(output_path, f"{name}_{counter}{ext}")
+                    counter += 1
+
                 try:
                     shutil.copy2(source_path, target_path)
                     self.log(f"  -> ÁTMÁSOLVA: {original_name} -> {os.path.basename(target_path)}")
-                    
-                    if self.embed_creation_date(target_path) == 'ffmpeg_not_found': break
+
+                    if self.embed_creation_date(target_path) == 'ffmpeg_not_found':
+                        break
                     copied_count += 1
                 except Exception as e:
                     self.log(f"  -> HIBA a másolás során ({original_name}): {e}")
@@ -261,11 +355,14 @@ class MedalUploaderTool(ctk.CTk):
             self.log("-" * 30)
             self.log(f"KÉSZ! {copied_count} új klip előkészítve a '{output_path}' mappába.")
             messagebox.showinfo("Siker", f"{copied_count} új klip átmásolva és előkészítve a feltöltéshez!")
+            self.save_config()
 
         except requests.exceptions.RequestException as e:
-            self.log(f"SZERVER HIBA: Nem sikerült elérni a weboldalt. Ellenőrizd az URL-t és a szerver állapotát."); messagebox.showerror("Szerver Hiba", f"Nem sikerült kapcsolódni a szerverhez:\n{e}")
+            self.log("SZERVER HIBA: Nem sikerült elérni a weboldalt. Ellenőrizd az URL-t és a szerver állapotát.")
+            messagebox.showerror("Szerver Hiba", f"Nem sikerült kapcsolódni a szerverhez:\n{e}")
         except Exception as e:
-            self.log(f"Kritikus hiba: {e}"); messagebox.showerror("Hiba", f"Váratlan hiba történt:\n{e}")
+            self.log(f"Kritikus hiba: {e}")
+            messagebox.showerror("Hiba", f"Váratlan hiba történt:\n{e}")
 
     # A régi függvények itt kezdődnek (változatlanul)
     def extract_mapping_recursive(self, data, result_dict):
@@ -277,9 +374,10 @@ class MedalUploaderTool(ctk.CTk):
             for v in data.values(): self.extract_mapping_recursive(v, result_dict)
         elif isinstance(data, list):
             for item in data: self.extract_mapping_recursive(item, result_dict)
-            
-    def start_rename(self): pass # Itt van a régi átnevező kódod
-    def start_revert(self): pass # Itt van a régi visszanevező kódod
+
+    def on_close(self):
+        self.save_config()
+        self.destroy()
 
 if __name__ == "__main__":
     app = MedalUploaderTool()
