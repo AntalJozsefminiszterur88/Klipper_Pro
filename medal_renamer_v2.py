@@ -74,7 +74,7 @@ class ConflictDialog(ctk.CTkToplevel):
 class MedalUploaderTool(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("UMGKL - Medal Klip Előkészítő v4 (Hash alapú szinkronizálás)")
+        self.title("UMKGL - Medal Klip Előkészítő v4 (Hash alapú szinkronizálás)")
         self.geometry("800x800")
 
         try:
