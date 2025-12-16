@@ -240,7 +240,7 @@ class MedalUploaderTool(ctk.CTk):
                 counter += 1
 
         try:
-            creation_timestamp = os.path.getctime(source_path)
+            creation_timestamp = os.path.getmtime(source_path)
             creation_datetime = datetime.fromtimestamp(creation_timestamp)
             formatted_date = creation_datetime.strftime('%Y-%m-%dT%H:%M:%SZ')
 
