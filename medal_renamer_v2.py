@@ -109,6 +109,10 @@ class MedalUploaderTool(ctk.CTk):
         self.textbox = ctk.CTkTextbox(self, height=200, font=("Consolas", 12))
         self.textbox.pack(fill="both", padx=20, pady=5)
 
+        self.progressbar = ctk.CTkProgressBar(self, progress_color="#27ae60")
+        self.progressbar.pack(fill="x", padx=20, pady=(0, 10))
+        self.progressbar.set(0)
+
         self.filename_to_title = {}
         self.log_counter = 0
         self.path_lock = threading.Lock()
@@ -275,6 +279,8 @@ class MedalUploaderTool(ctk.CTk):
             server_url = self.entry_server.get().strip()
             output_path = self.entry_output.get().strip()
 
+            self.progressbar.set(0)
+
             if not all([json_path, video_path, server_url, output_path]):
                 messagebox.showerror("Hiba", "Minden mezőt ki kell tölteni!")
                 return
@@ -309,6 +315,8 @@ class MedalUploaderTool(ctk.CTk):
 
             missing_debug_logged = 0
 
+            total_items = len(raw_clips)
+
             for i, (original_name, title) in enumerate(raw_clips.items()):
                 self.log(f"  Elemzés: {i + 1}/{len(raw_clips)} - {original_name}")
                 file_path = file_map.get(original_name.lower())
@@ -342,11 +350,15 @@ class MedalUploaderTool(ctk.CTk):
                         'source_path': file_path
                     }
 
+                if total_items:
+                    self.progressbar.set((i + 1) / total_items)
+
             if needs_update and not dry_run:
                 with open(CACHE_FILE, 'w') as f:
                     json.dump(cache, f, indent=2)
 
             self.log(f"Helyi klipek elemzése kész. {len(local_hashes)} érvényes klip azonosítva.")
+            self.progressbar.set(0)
             if missing_files:
                 self.log(f"Figyelem: {len(missing_files)} fájl nem található a klipek mappájában.")
 
@@ -385,6 +397,8 @@ class MedalUploaderTool(ctk.CTk):
             os.makedirs(output_path, exist_ok=True)
             self.log(f"\nExportálás: {len(files_to_process)} új klip másolása és javítása...")
             copied_count = 0
+            processed_exports = 0
+            total_exports = len(files_to_process)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 future_to_clip = {
@@ -398,6 +412,10 @@ class MedalUploaderTool(ctk.CTk):
                         self.log(message)
                     if success:
                         copied_count += 1
+
+                    processed_exports += 1
+                    if total_exports:
+                        self.progressbar.set(processed_exports / total_exports)
 
             self.log("-" * 30)
             self.log(f"KÉSZ! {copied_count} új klip előkészítve a '{output_path}' mappába.")
