@@ -292,6 +292,33 @@ class MedalUploaderTool(ctk.CTk):
             self.log(f"  -> HIBA a kodek ellenőrzésekor ({source_path}): {e}")
         return None
 
+    def get_video_height(self, source_path):
+        try:
+            result = subprocess.run(
+                [
+                    'ffprobe',
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=height',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    source_path
+                ],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
+            if result.returncode == 0:
+                height_str = result.stdout.strip()
+                return int(height_str) if height_str.isdigit() else None
+            else:
+                self.log(f"  -> FIGYELEM: ffprobe hiba (magasság) ({source_path}): {result.stderr.strip()}")
+        except FileNotFoundError:
+            self.log("[HIBA] Az 'ffprobe' nem található! A magasság ellenőrzés kihagyva.")
+        except Exception as e:
+            self.log(f"  -> HIBA a magasság ellenőrzésekor ({source_path}): {e}")
+        return None
+
     def process_single_clip(self, clip_info, video_path, output_path, original_hash, encoder_type):
         if self.stop_event.is_set():
             return False, "  -> Megszakítva a felhasználó által."
@@ -317,45 +344,27 @@ class MedalUploaderTool(ctk.CTk):
             formatted_date = creation_datetime.strftime('%Y-%m-%dT%H:%M:%SZ')
 
             self.log(f"  -> Export: {original_name} -> {os.path.basename(target_path)}")
-
-            codec = self.get_video_codec(source_path)
-            transcode_to_h264 = codec in {"hevc", "h265", "h.265"}
-            copy_streams = codec in {"h264", "avc1"}
-
-            if transcode_to_h264:
-                self.log("     Kodek: HEVC/H.265 észlelve, újrakódolás H.264-re.")
-                if encoder_type == "NVIDIA (NVENC)":
-                    video_params = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23']
-                elif encoder_type == "AMD (AMF)":
-                    video_params = ['-c:v', 'h264_amf', '-quality', 'balanced']
-                else:
-                    video_params = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '23']
-
-                base_command = [
-                    'ffmpeg', '-i', source_path,
-                    *video_params,
-                    '-c:a', 'aac',
-                    '-metadata', f'creation_time={formatted_date}',
-                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
-                    '-movflags', '+faststart',
-                    '-y', target_path
-                ]
+            video_height = self.get_video_height(source_path)
+            scale_filter = None
+            if video_height and video_height > 720:
+                scale_filter = "scale=-2:720"
+                self.log("     Átméretezés: Magasság > 720p, skálázás 720p-re.")
             else:
-                if copy_streams:
-                    self.log("     Kodek: H.264 észlelve, stream copy alkalmazva.")
-                else:
-                    self.log("     Kodek: Ismeretlen/egyéb, stream copy alkalmazva.")
-                command = [
-                    'ffmpeg', '-i', source_path,
-                    '-c', 'copy',
-                    '-metadata', f'creation_time={formatted_date}',
-                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
-                    '-movflags', '+faststart',
-                    '-y', target_path
-                ]
+                self.log("     Átméretezés: Nem szükséges, 720p vagy kisebb.")
 
-            if transcode_to_h264:
-                command = base_command
+            command = [
+                'ffmpeg', '-i', source_path,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                '-c:a', 'aac',
+                '-metadata', f'creation_time={formatted_date}',
+                '-metadata', f'comment=UMKGL_HASH:{original_hash}',
+                '-movflags', '+faststart',
+            ]
+
+            if scale_filter:
+                command.extend(['-vf', scale_filter])
+
+            command.extend(['-y', target_path])
 
             result = subprocess.run(
                 command,
@@ -364,27 +373,6 @@ class MedalUploaderTool(ctk.CTk):
                 encoding='utf-8',
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
-
-            if transcode_to_h264 and result.returncode != 0 and encoder_type in {"NVIDIA (NVENC)", "AMD (AMF)"}:
-                self.log("     GPU hiba, váltás CPU-ra...")
-                if self.stop_event.is_set():
-                    return False, "  -> Megszakítva a felhasználó által."
-                command = [
-                    'ffmpeg', '-i', source_path,
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                    '-c:a', 'aac',
-                    '-metadata', f'creation_time={formatted_date}',
-                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
-                    '-movflags', '+faststart',
-                    '-y', target_path
-                ]
-                result = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                )
 
             if result.returncode == 0:
                 return True, f"  -> KÉSZ: {os.path.basename(target_path)} (dátum: {creation_datetime.strftime('%Y.%m.%d %H:%M')})"
