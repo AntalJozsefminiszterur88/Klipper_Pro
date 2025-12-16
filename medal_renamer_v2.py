@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import ctypes
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -94,13 +95,13 @@ class MedalUploaderTool(ctk.CTk):
         self.btn_preview = ctk.CTkButton(self, text="ELŐNÉZET / TESZT", height=50,
                                        font=ctk.CTkFont(size=16, weight="bold"),
                                        fg_color="#5b6eae", hover_color="#7289da",
-                                       command=lambda: self.run_sync(dry_run=True))
+                                       command=lambda: self.start_processing_thread(dry_run=True))
         self.btn_preview.pack(fill="x", padx=20, pady=(20, 10))
 
         self.btn_prepare = ctk.CTkButton(self, text="ÚJ KLIPPEK EXPORTÁLÁSA", height=50,
                                        font=ctk.CTkFont(size=16, weight="bold"),
                                        fg_color="#27ae60", hover_color="#2ecc71",
-                                       command=lambda: self.run_sync(dry_run=False))
+                                       command=lambda: self.start_processing_thread(dry_run=False))
         self.btn_prepare.pack(fill="x", padx=20, pady=(0, 10))
 
         self.textbox_label = ctk.CTkLabel(self, text="Folyamatnapló (Konzol)", font=ctk.CTkFont(size=14))
@@ -109,6 +110,7 @@ class MedalUploaderTool(ctk.CTk):
         self.textbox.pack(fill="both", padx=20, pady=5)
 
         self.filename_to_title = {}
+        self.log_counter = 0
         self.log("Program indítva. Add meg az elérési utakat, majd kattints a zöld gombra.")
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -186,10 +188,20 @@ class MedalUploaderTool(ctk.CTk):
             clean_title = os.path.splitext(fallback_name)[0]
         return f"{clean_title}.mp4"
 
-    def log(self, msg):
-        self.textbox.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-        self.textbox.see("end")
-        self.update_idletasks()
+    def set_buttons_state(self, state):
+        self.after(0, lambda: (self.btn_preview.configure(state=state), self.btn_prepare.configure(state=state)))
+
+    def start_processing_thread(self, dry_run=False):
+        self.set_buttons_state("disabled")
+        threading.Thread(target=self.run_sync, args=(dry_run,), daemon=True).start()
+
+    def log(self, msg, force_update=False):
+        def append_message():
+            self.log_counter += 1
+            self.textbox.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+            if force_update or self.log_counter % 10 == 0:
+                self.textbox.see("end")
+        self.after(0, append_message)
 
     def browse_json(self): self.browse_file(self.entry_json, [("JSON files", "*.json")])
     def browse_video(self): self.browse_dir(self.entry_video)
@@ -236,19 +248,19 @@ class MedalUploaderTool(ctk.CTk):
         return False
 
     def run_sync(self, dry_run=False):
-        json_path = self.entry_json.get().strip()
-        video_path = self.entry_video.get().strip()
-        server_url = self.entry_server.get().strip()
-        output_path = self.entry_output.get().strip()
-
-        if not all([json_path, video_path, server_url, output_path]):
-            messagebox.showerror("Hiba", "Minden mezőt ki kell tölteni!")
-            return
-
-        header = "ELŐNÉZET / TESZT" if dry_run else "ÚJ KLIPPEK EXPORTÁLÁSA"
-        self.log(f"\n--- {header} (HASH ALAPÚ SZINKRONIZÁLÁS) ---")
-
         try:
+            json_path = self.entry_json.get().strip()
+            video_path = self.entry_video.get().strip()
+            server_url = self.entry_server.get().strip()
+            output_path = self.entry_output.get().strip()
+
+            if not all([json_path, video_path, server_url, output_path]):
+                messagebox.showerror("Hiba", "Minden mezőt ki kell tölteni!")
+                return
+
+            header = "ELŐNÉZET / TESZT" if dry_run else "ÚJ KLIPPEK EXPORTÁLÁSA"
+            self.log(f"\n--- {header} (HASH ALAPÚ SZINKRONIZÁLÁS) ---", force_update=True)
+
             cache = {}
             if os.path.exists(CACHE_FILE):
                 with open(CACHE_FILE, 'r') as f:
@@ -386,6 +398,8 @@ class MedalUploaderTool(ctk.CTk):
         except Exception as e:
             self.log(f"Kritikus hiba: {e}")
             messagebox.showerror("Hiba", f"Váratlan hiba történt:\n{e}")
+        finally:
+            self.set_buttons_state("normal")
 
     # A régi függvények itt kezdődnek (változatlanul)
     def extract_mapping_recursive(self, data, result_dict):
