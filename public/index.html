@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Videó Galéria</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    h1 {
+      margin-top: 0;
+      color: #f8fafc;
+      text-align: center;
+    }
+
+    #videoGrid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .video-card {
+      background: #1e293b;
+      border-radius: 10px;
+      padding: 10px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      cursor: pointer;
+    }
+
+    .video-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+    }
+
+    .video-card video {
+      width: 100%;
+      border-radius: 8px;
+      background: #0b1224;
+    }
+
+    .video-title {
+      font-size: 14px;
+      margin: 0;
+      color: #e2e8f0;
+      word-break: break-word;
+    }
+
+    /* Modal */
+    #videoModal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+
+    #videoModal .modal-content {
+      background: #0f172a;
+      padding: 16px;
+      border-radius: 10px;
+      max-width: 900px;
+      width: 100%;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      position: relative;
+    }
+
+    #videoModal .close-btn {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      background: transparent;
+      border: none;
+      color: #e2e8f0;
+      font-size: 24px;
+      cursor: pointer;
+    }
+
+    #modalVideoPlayer {
+      width: 100%;
+      max-height: 80vh;
+      border-radius: 8px;
+      background: #0b1224;
+    }
+  </style>
+</head>
+<body>
+  <h1>Videó Galéria</h1>
+  <div id="videoGrid">Videók betöltése...</div>
+
+  <div id="videoModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <button class="close-btn" aria-label="Bezárás">&times;</button>
+      <video id="modalVideoPlayer" controls></video>
+    </div>
+  </div>
+
+  <script>
+    const videoGrid = document.getElementById('videoGrid');
+    const videoModal = document.getElementById('videoModal');
+    const modalVideoPlayer = document.getElementById('modalVideoPlayer');
+    const closeBtn = document.querySelector('.close-btn');
+
+    function renderVideoGrid(videos) {
+      videoGrid.innerHTML = '';
+
+      if (!videos.length) {
+        videoGrid.textContent = 'Nincs elérhető videó.';
+        return;
+      }
+
+      videos.forEach((video) => {
+        const card = document.createElement('div');
+        card.className = 'video-card';
+
+        const videoEl = document.createElement('video');
+        videoEl.setAttribute('poster', `/uploads/thumbnails/${video.thumbnail_filename}`);
+        videoEl.setAttribute('preload', 'none');
+        videoEl.muted = true;
+        videoEl.playsInline = true;
+
+        videoEl.addEventListener('click', () => openVideoModal(video));
+
+        const title = document.createElement('p');
+        title.className = 'video-title';
+        title.textContent = video.originalname || video.filename;
+
+        card.appendChild(videoEl);
+        card.appendChild(title);
+        videoGrid.appendChild(card);
+      });
+    }
+
+    function openVideoModal(video) {
+      modalVideoPlayer.src = `/uploads/${video.filename}`;
+      videoModal.style.display = 'flex';
+      modalVideoPlayer.play().catch(() => {});
+    }
+
+    function closeModal() {
+      modalVideoPlayer.pause();
+      modalVideoPlayer.removeAttribute('src');
+      modalVideoPlayer.load();
+      videoModal.style.display = 'none';
+    }
+
+    closeBtn.addEventListener('click', closeModal);
+    videoModal.addEventListener('click', (event) => {
+      if (event.target === videoModal) {
+        closeModal();
+      }
+    });
+
+    async function fetchVideos() {
+      try {
+        const response = await fetch('/api/videos');
+        if (!response.ok) throw new Error('Hiba a videók lekérésekor');
+        const videos = await response.json();
+        renderVideoGrid(videos);
+      } catch (error) {
+        console.error(error);
+        videoGrid.textContent = 'Nem sikerült betölteni a videókat.';
+      }
+    }
+
+    fetchVideos();
+  </script>
+</body>
+</html>
