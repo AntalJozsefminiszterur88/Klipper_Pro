@@ -86,11 +86,24 @@ class MedalUploaderTool(ctk.CTk):
 
         self.config_data = self.load_config()
 
+        self.stop_event = threading.Event()
+
         # GUI elemek
         self.create_path_entry("1. Medal Adatbázis (clips.json):", "entry_json", self.browse_json, self.config_data.get("json_path", ""))
         self.create_path_entry("2. Medal Klipek Mappája:", "entry_video", self.browse_video, self.config_data.get("video_path", ""))
         self.create_path_entry("3. Weboldal Címe (URL):", "entry_server", None, self.config_data.get("server_url", ""))
         self.create_path_entry("4. Célmappa (ide kerülnek a feltöltendők):", "entry_output", self.browse_output, self.config_data.get("output_path", ""))
+
+        encoder_frame = ctk.CTkFrame(self)
+        encoder_frame.pack(fill="x", padx=20, pady=(5, 10))
+        ctk.CTkLabel(encoder_frame, text="Kódolás típusa:", width=250, anchor="w").pack(side="left", padx=10)
+        self.encoder_menu = ctk.CTkOptionMenu(
+            encoder_frame,
+            values=["CPU (Lassú, Stabil)", "NVIDIA (NVENC)", "AMD (AMF)"],
+            width=220
+        )
+        self.encoder_menu.pack(side="left", padx=10)
+        self.encoder_menu.set(self.config_data.get("encoder", "CPU (Lassú, Stabil)"))
 
         self.btn_preview = ctk.CTkButton(self, text="ELŐNÉZET / TESZT", height=50,
                                        font=ctk.CTkFont(size=16, weight="bold"),
@@ -109,8 +122,19 @@ class MedalUploaderTool(ctk.CTk):
         self.textbox = ctk.CTkTextbox(self, height=200, font=("Consolas", 12))
         self.textbox.pack(fill="both", padx=20, pady=5)
 
-        self.progressbar = ctk.CTkProgressBar(self, progress_color="#27ae60")
-        self.progressbar.pack(fill="x", padx=20, pady=(0, 10))
+        progress_frame = ctk.CTkFrame(self, fg_color="transparent")
+        progress_frame.pack(fill="x", padx=20, pady=(0, 10))
+        self.progressbar = ctk.CTkProgressBar(progress_frame, progress_color="#27ae60")
+        self.progressbar.pack(side="left", fill="x", expand=True, pady=(0, 5))
+        self.btn_stop = ctk.CTkButton(
+            progress_frame,
+            text="LEÁLLÍTÁS",
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            state="disabled",
+            command=self.request_stop
+        )
+        self.btn_stop.pack(side="left", padx=(10, 0), pady=(0, 5))
         self.progressbar.set(0)
 
         self.filename_to_title = {}
@@ -148,6 +172,7 @@ class MedalUploaderTool(ctk.CTk):
             "video_path": "",
             "server_url": "http://api.umkgl.online:3000",
             "output_path": default_output,
+            "encoder": "CPU (Lassú, Stabil)",
         }
 
     def load_config(self):
@@ -161,6 +186,7 @@ class MedalUploaderTool(ctk.CTk):
                     "video_path": data.get("video_path", defaults["video_path"]),
                     "server_url": data.get("server_url", defaults["server_url"]),
                     "output_path": data.get("output_path", defaults["output_path"]),
+                    "encoder": data.get("encoder", defaults["encoder"]),
                 })
             except Exception:
                 pass
@@ -172,6 +198,7 @@ class MedalUploaderTool(ctk.CTk):
             "video_path": self.entry_video.get().strip(),
             "server_url": self.entry_server.get().strip(),
             "output_path": self.entry_output.get().strip(),
+            "encoder": self.encoder_menu.get(),
         }
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -196,8 +223,13 @@ class MedalUploaderTool(ctk.CTk):
     def set_buttons_state(self, state):
         self.after(0, lambda: (self.btn_preview.configure(state=state), self.btn_prepare.configure(state=state)))
 
+    def set_stop_button_state(self, state):
+        self.after(0, lambda: self.btn_stop.configure(state=state))
+
     def start_processing_thread(self, dry_run=False):
         self.set_buttons_state("disabled")
+        self.set_stop_button_state("normal")
+        self.stop_event.clear()
         threading.Thread(target=self.run_sync, args=(dry_run,), daemon=True).start()
 
     def log(self, msg, force_update=False):
@@ -207,6 +239,12 @@ class MedalUploaderTool(ctk.CTk):
             if force_update or self.log_counter % 10 == 0:
                 self.textbox.see("end")
         self.after(0, append_message)
+
+    def request_stop(self):
+        if not self.stop_event.is_set():
+            self.log("Leállítás kérése folyamatban...")
+            self.stop_event.set()
+        self.set_stop_button_state("disabled")
 
     def browse_json(self): self.browse_file(self.entry_json, [("JSON files", "*.json")])
     def browse_video(self): self.browse_dir(self.entry_video)
@@ -252,7 +290,9 @@ class MedalUploaderTool(ctk.CTk):
             self.log(f"  -> HIBA a kodek ellenőrzésekor ({source_path}): {e}")
         return None
 
-    def process_single_clip(self, clip_info, video_path, output_path, original_hash):
+    def process_single_clip(self, clip_info, video_path, output_path, original_hash, encoder_type):
+        if self.stop_event.is_set():
+            return False, "  -> Megszakítva a felhasználó által."
         original_name, title = clip_info['original_name'], clip_info['title']
         source_path = clip_info['source_path']
         target_name = self.sanitize_title(title, original_name)
@@ -281,10 +321,17 @@ class MedalUploaderTool(ctk.CTk):
             copy_streams = codec in {"h264", "avc1"}
 
             if transcode_to_h264:
-                self.log("     Kodek: HEVC/H.265 észlelve, újrakódolás H.264-re (libx264).")
-                command = [
+                self.log("     Kodek: HEVC/H.265 észlelve, újrakódolás H.264-re.")
+                if encoder_type == "NVIDIA (NVENC)":
+                    video_params = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23']
+                elif encoder_type == "AMD (AMF)":
+                    video_params = ['-c:v', 'h264_amf', '-quality', 'balanced']
+                else:
+                    video_params = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '23']
+
+                base_command = [
                     'ffmpeg', '-i', source_path,
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                    *video_params,
                     '-c:a', 'aac',
                     '-metadata', f'creation_time={formatted_date}',
                     '-metadata', f'comment=UMKGL_HASH:{original_hash}',
@@ -305,6 +352,9 @@ class MedalUploaderTool(ctk.CTk):
                     '-y', target_path
                 ]
 
+            if transcode_to_h264:
+                command = base_command
+
             result = subprocess.run(
                 command,
                 capture_output=True,
@@ -312,6 +362,27 @@ class MedalUploaderTool(ctk.CTk):
                 encoding='utf-8',
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
+
+            if transcode_to_h264 and result.returncode != 0 and encoder_type in {"NVIDIA (NVENC)", "AMD (AMF)"}:
+                self.log("     GPU hiba, váltás CPU-ra...")
+                if self.stop_event.is_set():
+                    return False, "  -> Megszakítva a felhasználó által."
+                command = [
+                    'ffmpeg', '-i', source_path,
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                    '-c:a', 'aac',
+                    '-metadata', f'creation_time={formatted_date}',
+                    '-metadata', f'comment=UMKGL_HASH:{original_hash}',
+                    '-movflags', '+faststart',
+                    '-y', target_path
+                ]
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                )
 
             if result.returncode == 0:
                 return True, f"  -> KÉSZ: {os.path.basename(target_path)} (dátum: {creation_datetime.strftime('%Y.%m.%d %H:%M')})"
@@ -328,6 +399,7 @@ class MedalUploaderTool(ctk.CTk):
             video_path = self.entry_video.get().strip()
             server_url = self.entry_server.get().strip()
             output_path = self.entry_output.get().strip()
+            encoder_type = self.encoder_menu.get()
 
             self.progressbar.set(0)
 
@@ -368,6 +440,9 @@ class MedalUploaderTool(ctk.CTk):
             total_items = len(raw_clips)
 
             for i, (original_name, title) in enumerate(raw_clips.items()):
+                if self.stop_event.is_set():
+                    self.log("Folyamat megszakítva elemzés közben.")
+                    break
                 self.log(f"  Elemzés: {i + 1}/{len(raw_clips)} - {original_name}")
                 file_path = file_map.get(original_name.lower())
 
@@ -413,6 +488,11 @@ class MedalUploaderTool(ctk.CTk):
             if missing_files:
                 self.log(f"Figyelem: {len(missing_files)} fájl nem található a klipek mappájában.")
 
+            if self.stop_event.is_set():
+                self.log("Megszakítva a felhasználó által az elemzés után.")
+                self.save_config()
+                return
+
             self.log("Kapcsolódás a szerverhez...")
             api_endpoint = f"{server_url.rstrip('/')}/api/videos/get-uploaded-hashes"
             response = requests.get(api_endpoint, timeout=10)
@@ -451,22 +531,37 @@ class MedalUploaderTool(ctk.CTk):
             processed_exports = 0
             total_exports = len(files_to_process)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                future_to_clip = {
-                    executor.submit(self.process_single_clip, clip_info, video_path, output_path, clip_info['hash']): clip_info
-                    for clip_info in files_to_process
-                }
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+            try:
+                future_to_clip = {}
+                for clip_info in files_to_process:
+                    if self.stop_event.is_set():
+                        self.log("Exportálás megszakítva a felhasználó által (indítás előtt).")
+                        break
+                    future = executor.submit(self.process_single_clip, clip_info, video_path, output_path, clip_info['hash'], encoder_type)
+                    future_to_clip[future] = clip_info
 
-                for future in concurrent.futures.as_completed(future_to_clip):
-                    success, message = future.result()
-                    if message:
-                        self.log(message)
-                    if success:
-                        copied_count += 1
+                if future_to_clip:
+                    for future in concurrent.futures.as_completed(future_to_clip):
+                        if self.stop_event.is_set():
+                            self.log("Exportálás megszakítva, várakozó feladatok leállítása...")
+                            break
+                        success, message = future.result()
+                        if message:
+                            self.log(message)
+                        if success:
+                            copied_count += 1
 
-                    processed_exports += 1
-                    if total_exports:
-                        self.progressbar.set(processed_exports / total_exports)
+                        processed_exports += 1
+                        if total_exports:
+                            self.progressbar.set(processed_exports / total_exports)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+            if self.stop_event.is_set():
+                self.log("Folyamat leállítva a felhasználó kérésére.")
+                self.save_config()
+                return
 
             self.log("-" * 30)
             self.log(f"KÉSZ! {copied_count} új klip előkészítve a '{output_path}' mappába.")
@@ -481,6 +576,7 @@ class MedalUploaderTool(ctk.CTk):
             messagebox.showerror("Hiba", f"Váratlan hiba történt:\n{e}")
         finally:
             self.set_buttons_state("normal")
+            self.set_stop_button_state("disabled")
 
     # A régi függvények itt kezdődnek (változatlanul)
     def extract_mapping_recursive(self, data, result_dict):
