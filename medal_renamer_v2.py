@@ -254,6 +254,18 @@ class MedalUploaderTool(ctk.CTk):
                 with open(CACHE_FILE, 'r') as f:
                     cache = json.load(f)
 
+            # Fájlok rekurzív feltérképezése az almappákkal együtt
+            file_map = {}
+            mp4_count = 0
+            for root, _, files in os.walk(video_path):
+                for file in files:
+                    if file.lower().endswith('.mp4'):
+                        mp4_count += 1
+                        abs_path = os.path.abspath(os.path.join(root, file))
+                        file_map.setdefault(file, abs_path)
+
+            self.log(f"Összesen {mp4_count} darab .mp4 fájlt találtunk a mappában és almappákban.")
+
             with open(json_path, 'r', encoding='utf-8') as f:
                 raw_clips = {}
                 self.extract_mapping_recursive(json.load(f), raw_clips)
@@ -264,8 +276,8 @@ class MedalUploaderTool(ctk.CTk):
 
             for i, (original_name, title) in enumerate(raw_clips.items()):
                 self.log(f"  Elemzés: {i + 1}/{len(raw_clips)} - {original_name}")
-                file_path = os.path.join(video_path, original_name)
-                if not os.path.exists(file_path):
+                file_path = file_map.get(original_name)
+                if not file_path or not os.path.exists(file_path):
                     missing_files.append(original_name)
                     continue
 
@@ -283,7 +295,8 @@ class MedalUploaderTool(ctk.CTk):
                     local_hashes[file_hash] = {
                         'original_name': original_name,
                         'title': title,
-                        'size': os.path.getsize(file_path)
+                        'size': os.path.getsize(file_path),
+                        'source_path': file_path
                     }
 
             if needs_update and not dry_run:
@@ -332,7 +345,7 @@ class MedalUploaderTool(ctk.CTk):
 
             for clip_info in files_to_process:
                 original_name, title = clip_info['original_name'], clip_info['title']
-                source_path = os.path.join(video_path, original_name)
+                source_path = clip_info['source_path']
                 target_name = self.sanitize_title(title, original_name)
                 target_path = os.path.join(output_path, target_name)
 
