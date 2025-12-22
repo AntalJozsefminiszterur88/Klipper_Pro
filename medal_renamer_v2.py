@@ -4,7 +4,7 @@ import json
 import ctypes
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 import subprocess
 from datetime import datetime
@@ -29,10 +29,234 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 try:
-    myappid = 'umgkl.medal.uploader.v4.hash_sync' 
+    myappid = 'umgkl.medal.uploader.v4.hash_sync'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 except:
     pass
+
+
+class DetectiveWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Nyomozó Mód")
+        self.geometry("1100x700")
+        self.parent = parent
+        try:
+            self.iconbitmap(resource_path("icon.ico"))
+        except:
+            pass
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkLabel(self, text="Nyomozó Mód - hiányzó vagy feltöltetlen klipek diagnosztikája", font=ctk.CTkFont(size=18, weight="bold"))
+        header.grid(row=0, column=0, padx=20, pady=(15, 10), sticky="w")
+
+        progress_frame = ctk.CTkFrame(self, fg_color="transparent")
+        progress_frame.grid(row=1, column=0, sticky="ew", padx=20)
+        progress_frame.grid_columnconfigure(0, weight=1)
+        self.status_label = ctk.CTkLabel(progress_frame, text="Adatok összegyűjtése...", anchor="w")
+        self.status_label.grid(row=0, column=0, sticky="w")
+        self.progressbar = ctk.CTkProgressBar(progress_frame, progress_color="#27ae60")
+        self.progressbar.grid(row=1, column=0, sticky="ew", pady=5)
+        self.progressbar.set(0)
+
+        table_frame = ctk.CTkFrame(self, fg_color="transparent")
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(10, 20))
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+
+        style = ttk.Style(self)
+        style.theme_use("default")
+        style.configure(
+            "Dark.Treeview",
+            background="#2b2d31",
+            fieldbackground="#2b2d31",
+            foreground="white",
+            bordercolor="#1e1f22",
+            borderwidth=0,
+            rowheight=26
+        )
+        style.configure("Dark.Treeview.Heading", background="#1e1f22", foreground="white", relief="flat")
+        style.map("Dark.Treeview", background=[("selected", "#3a3f44")])
+
+        columns = ("filename", "json_title", "filesystem", "hash", "server_status", "diagnosis")
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            style="Dark.Treeview"
+        )
+        headings = {
+            "filename": "Fájlnév",
+            "json_title": "JSON Cím",
+            "filesystem": "Fájlrendszer",
+            "hash": "Hash",
+            "server_status": "Szerver Státusz",
+            "diagnosis": "Diagnózis"
+        }
+        for col, text in headings.items():
+            self.tree.heading(col, text=text)
+        self.tree.column("filename", width=220, anchor="w")
+        self.tree.column("json_title", width=260, anchor="w")
+        self.tree.column("filesystem", width=100, anchor="center")
+        self.tree.column("hash", width=160, anchor="center")
+        self.tree.column("server_status", width=120, anchor="center")
+        self.tree.column("diagnosis", width=180, anchor="center")
+
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        self.analysis_thread = threading.Thread(target=self.run_analysis, daemon=True)
+        self.analysis_thread.start()
+
+    def set_status(self, message):
+        self.after(0, lambda: self.status_label.configure(text=message))
+
+    def set_progress(self, value):
+        self.after(0, lambda: self.progressbar.set(value))
+
+    def populate_table(self, rows):
+        for row in rows:
+            self.tree.insert("", "end", values=row)
+        if not rows:
+            self.tree.insert("", "end", values=("-", "-", "-", "-", "-", "Nincs adat"))
+
+    def run_analysis(self):
+        try:
+            json_path = self.parent.entry_json.get().strip()
+            video_path = self.parent.entry_video.get().strip()
+            server_url = self.parent.entry_server.get().strip()
+
+            if not all([json_path, video_path, server_url]):
+                self.set_status("Hiányzó beállítások. Töltsd ki a főablak mezőit.")
+                return
+
+            if not os.path.exists(json_path):
+                self.set_status("A megadott clips.json nem található.")
+                return
+
+            self.set_status("JSON beolvasása...")
+            with open(json_path, 'r', encoding='utf-8') as f:
+                raw_clips = {}
+                self.parent.extract_mapping_recursive(json.load(f), raw_clips)
+
+            self.set_status("Helyi fájlok feltérképezése...")
+            file_map = {}
+            for root, _, files in os.walk(video_path):
+                for file in files:
+                    if file.lower().endswith('.mp4'):
+                        file_map[file.lower()] = os.path.join(root, file)
+
+            cache = {}
+            if os.path.exists(CACHE_FILE):
+                try:
+                    with open(CACHE_FILE, 'r') as f:
+                        cache = json.load(f)
+                except Exception:
+                    cache = {}
+
+            needs_update = False
+            entries = {}
+            for name, title in raw_clips.items():
+                key = name.lower()
+                entries.setdefault(key, {"filename": name, "json_title": title, "in_json": True, "in_fs": False})
+                entries[key]["json_title"] = title
+                entries[key]["in_json"] = True
+
+            for lower_name, path in file_map.items():
+                display_name = os.path.basename(path)
+                entry = entries.setdefault(lower_name, {"filename": display_name, "json_title": "", "in_json": False, "in_fs": False})
+                entry["filename"] = entry.get("filename") or display_name
+                entry["filepath"] = path
+                entry["in_fs"] = True
+
+            all_items = list(entries.values())
+            total_items = len(all_items) if all_items else 1
+            hash_to_entries = defaultdict(list)
+
+            for idx, entry in enumerate(all_items):
+                if entry.get("in_fs"):
+                    path = entry.get("filepath")
+                    if path and os.path.exists(path):
+                        mtime = os.path.getmtime(path)
+                        cache_key = entry.get("filename")
+                        cached = cache.get(cache_key)
+                        if cached and cached.get('mtime') == mtime:
+                            file_hash = cached.get('hash')
+                        else:
+                            file_hash = self.parent.calculate_file_hash(path)
+                            if file_hash:
+                                cache[cache_key] = {'hash': file_hash, 'mtime': mtime}
+                                needs_update = True
+                        entry["hash"] = file_hash
+                        if file_hash:
+                            hash_to_entries[file_hash].append(entry)
+                self.set_progress((idx + 1) / total_items)
+
+            if needs_update:
+                try:
+                    with open(CACHE_FILE, 'w') as f:
+                        json.dump(cache, f, indent=2)
+                except Exception:
+                    pass
+
+            self.set_status("Szerver státusz lekérdezése...")
+            server_hashes = None
+            try:
+                api_endpoint = f"{server_url.rstrip('/')}/api/videos/get-uploaded-hashes"
+                response = requests.get(api_endpoint, timeout=10)
+                response.raise_for_status()
+                server_hashes = set(response.json())
+            except Exception as e:
+                self.set_status(f"Nem sikerült a szerver lekérdezése: {e}")
+
+            rows = []
+            for entry in all_items:
+                filename = entry.get("filename", "-")
+                title = entry.get("json_title", "") or "-"
+                in_fs = entry.get("in_fs", False)
+                file_hash = entry.get("hash")
+                hash_short = file_hash[:12] + "..." if file_hash else "-"
+
+                if server_hashes is None:
+                    server_status = "Ismeretlen"
+                else:
+                    server_status = "FENT VAN" if file_hash and file_hash in server_hashes else "NINCS FENT"
+
+                if entry.get("in_json") and not in_fs:
+                    diagnosis = "Hiányzó fájl"
+                elif in_fs and not entry.get("in_json"):
+                    diagnosis = "Nincs a JSON-ban"
+                elif file_hash and len(hash_to_entries[file_hash]) > 1:
+                    diagnosis = "Hash ütközés"
+                elif in_fs and file_hash and server_status == "FENT VAN":
+                    diagnosis = "Rendben"
+                elif in_fs and not file_hash:
+                    diagnosis = "Hash hiba"
+                else:
+                    diagnosis = "Nincs feltöltve"
+
+                rows.append((
+                    filename,
+                    title,
+                    "IGEN" if in_fs else "NEM",
+                    hash_short,
+                    server_status,
+                    diagnosis
+                ))
+
+            self.set_status("Kész")
+            self.set_progress(1)
+            self.after(0, lambda: self.populate_table(rows))
+        except Exception as e:
+            self.set_status(f"Hiba történt: {e}")
+
 
 class ConflictDialog(ctk.CTkToplevel):
     # Ez a class változatlan, a régi átnevezéshez kell
@@ -105,6 +329,17 @@ class MedalUploaderTool(ctk.CTk):
         )
         self.encoder_menu.pack(side="left", padx=10)
         self.encoder_menu.set(self.config_data.get("encoder", "CPU (Lassú, Stabil)"))
+
+        self.btn_detective = ctk.CTkButton(
+            self,
+            text="NYOMOZÓ MÓD 🔍",
+            height=40,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color="#8e44ad",
+            hover_color="#9b59b6",
+            command=self.open_detective_mode
+        )
+        self.btn_detective.pack(fill="x", padx=20, pady=(10, 5))
 
         self.btn_preview = ctk.CTkButton(self, text="ELŐNÉZET / TESZT", height=50,
                                        font=ctk.CTkFont(size=16, weight="bold"),
@@ -226,6 +461,9 @@ class MedalUploaderTool(ctk.CTk):
 
     def set_stop_button_state(self, state):
         self.after(0, lambda: self.btn_stop.configure(state=state))
+
+    def open_detective_mode(self):
+        DetectiveWindow(self)
 
     def start_processing_thread(self, dry_run=False):
         self.set_buttons_state("disabled")
