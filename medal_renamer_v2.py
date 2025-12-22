@@ -326,20 +326,9 @@ class MedalUploaderTool(ctk.CTk):
         source_path = clip_info['source_path']
         target_name = self.sanitize_title(title, original_name)
 
-        encoder_type_lower = (encoder_type or "").lower()
-        cpu_encoder = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '24']
-        nvidia_encoder = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '24', '-b:v', '0']
-        amd_encoder = ['-c:v', 'h264_amf', '-quality', 'balanced']
-
-        if "nvidia" in encoder_type_lower:
-            video_encoder_params = nvidia_encoder
-            allow_fallback = True
-        elif "amd" in encoder_type_lower:
-            video_encoder_params = amd_encoder
-            allow_fallback = True
-        else:
-            video_encoder_params = cpu_encoder
-            allow_fallback = False
+        # Az eredeti videófolyam változtatás nélküli átmásolása (nincs tömörítés vagy átméretezés)
+        video_encoder_params = ['-c', 'copy']
+        allow_fallback = False
 
         relative_folder = os.path.relpath(os.path.dirname(source_path), video_path)
         target_dir = os.path.join(output_path, relative_folder)
@@ -359,21 +348,13 @@ class MedalUploaderTool(ctk.CTk):
             formatted_date = creation_datetime.strftime('%Y-%m-%dT%H:%M:%SZ')
 
             self.log(f"  -> Export: {original_name} -> {os.path.basename(target_path)}")
-            video_height = self.get_video_height(source_path)
-            scale_filter = None
-            if video_height and video_height > 720:
-                scale_filter = "scale=-2:720"
-                self.log("     Átméretezés: Magasság > 720p, skálázás 720p-re.")
-            else:
-                self.log("     Átméretezés: Nem szükséges, 720p vagy kisebb.")
+            # Az eredeti felbontás megtartása, nincs skálázás
+            self.log("     Átméretezés: Nem történik, eredeti felbontás megtartva.")
 
             def build_command(video_params):
                 cmd = ['ffmpeg', '-i', source_path]
-                if scale_filter:
-                    cmd.extend(['-vf', scale_filter])
                 cmd.extend(video_params)
                 cmd.extend([
-                    '-c:a', 'aac',
                     '-metadata', f'creation_time={formatted_date}',
                     '-metadata', f'comment=UMKGL_HASH:{original_hash}',
                     '-movflags', '+faststart',
